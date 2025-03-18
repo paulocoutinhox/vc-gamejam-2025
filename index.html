@@ -1,0 +1,853 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Caça Zumbis Geométricos</title>
+    <style>
+        body { margin: 0; overflow: hidden; }
+        canvas { display: block; }
+        #score {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            color: white;
+            font-family: Arial, sans-serif;
+            font-size: 24px;
+            pointer-events: none;
+        }
+        #instructions {
+            position: absolute;
+            bottom: 10px;
+            width: 100%;
+            text-align: center;
+            color: white;
+            font-family: Arial, sans-serif;
+            pointer-events: none;
+        }
+        #health-container {
+            position: absolute;
+            top: 45px;
+            left: 10px;
+            width: 200px;
+            height: 20px;
+            background-color: rgba(0, 0, 0, 0.5);
+            border-radius: 5px;
+            overflow: hidden;
+        }
+        #health-bar {
+            width: 100%;
+            height: 100%;
+            background-color: #e74c3c;
+            transition: width 0.3s;
+        }
+        #game-over {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.8);
+            display: none;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            color: white;
+            font-family: Arial, sans-serif;
+        }
+        #game-over h1 {
+            font-size: 48px;
+            margin-bottom: 20px;
+            color: #e74c3c;
+            text-shadow: 0 0 10px #ff0000;
+        }
+        #final-score {
+            font-size: 24px;
+            margin-bottom: 30px;
+        }
+        #restart-button {
+            padding: 15px 30px;
+            background-color: #e74c3c;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            font-size: 18px;
+            cursor: pointer;
+            transition: background-color 0.3s;
+        }
+        #restart-button:hover {
+            background-color: #c0392b;
+        }
+    </style>
+</head>
+<body>
+    <div id="score">Pontos: 0</div>
+    <div id="health-container">
+        <div id="health-bar"></div>
+    </div>
+    <div id="instructions">WASD para mover | Mouse para mirar | Clique para atirar</div>
+    <div id="game-over">
+        <h1>GAME OVER</h1>
+        <div id="final-score">Pontuação final: 0</div>
+        <button id="restart-button">Jogar Novamente</button>
+    </div>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.137.0/build/three.min.js"></script>
+    <script>
+        // Variáveis globais
+        let scene, camera, renderer, player, bullets = [], zombies = [];
+        let score = 0;
+        let playerHealth = 10;
+        let isGameOver = false;
+        const scoreElement = document.getElementById('score');
+        const healthBar = document.getElementById('health-bar');
+        const gameOverScreen = document.getElementById('game-over');
+        const finalScoreElement = document.getElementById('final-score');
+        const restartButton = document.getElementById('restart-button');
+        const moveSpeed = 0.15;
+        const bulletSpeed = 0.8;
+        const zombieSpeed = 0.05;
+        const maxZombies = 10;
+        const spawnInterval = 2000; // ms
+        const gameSize = 20; // tamanho da área de jogo
+        let powerUps = []; // Array para powerups
+        let pointerLocked = false; // Status do pointer lock
+        let zombieSpawnIntervalId;
+        let powerUpSpawnIntervalId;
+        
+        // Controles
+        const keys = {
+            w: false,
+            a: false,
+            s: false,
+            d: false
+        };
+        
+        let mouseX = 0, mouseY = 0;
+        let targetRotation = 0; // Rotação alvo para o jogador
+        
+        // Configuração inicial
+        function init() {
+            // Cena
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x222222);
+            
+            // Câmera
+            camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.set(0, 5, 8);
+            camera.lookAt(0, 0, 0);
+            
+            // Renderer
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.shadowMap.enabled = true;
+            document.body.appendChild(renderer.domElement);
+            
+            // Luz
+            const ambientLight = new THREE.AmbientLight(0x404040);
+            scene.add(ambientLight);
+            
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 1);
+            directionalLight.position.set(10, 15, 10);
+            directionalLight.castShadow = true;
+            directionalLight.shadow.camera.left = -gameSize;
+            directionalLight.shadow.camera.right = gameSize;
+            directionalLight.shadow.camera.top = gameSize;
+            directionalLight.shadow.camera.bottom = -gameSize;
+            scene.add(directionalLight);
+            
+            // Chão
+            const floorGeometry = new THREE.PlaneGeometry(gameSize * 2, gameSize * 2);
+            const floorMaterial = new THREE.MeshStandardMaterial({ 
+                color: 0x555555,
+                roughness: 0.8
+            });
+            const floor = new THREE.Mesh(floorGeometry, floorMaterial);
+            floor.rotation.x = -Math.PI / 2;
+            floor.receiveShadow = true;
+            scene.add(floor);
+            
+            // Jogador (composto por formas geométricas)
+            player = new THREE.Group();
+            
+            // Corpo do jogador
+            const playerBody = new THREE.Mesh(
+                new THREE.BoxGeometry(1, 1.5, 1),
+                new THREE.MeshStandardMaterial({ color: 0x3498db })
+            );
+            playerBody.position.y = 0.75;
+            playerBody.castShadow = true;
+            player.add(playerBody);
+            
+            // Cabeça do jogador
+            const playerHead = new THREE.Mesh(
+                new THREE.SphereGeometry(0.4, 16, 16),
+                new THREE.MeshStandardMaterial({ color: 0x2980b9 })
+            );
+            playerHead.position.y = 1.85;
+            playerHead.castShadow = true;
+            player.add(playerHead);
+            
+            // Arma do jogador
+            const gun = new THREE.Group();
+            
+            const gunBody = new THREE.Mesh(
+                new THREE.BoxGeometry(0.2, 0.2, 1),
+                new THREE.MeshStandardMaterial({ color: 0x7f8c8d })
+            );
+            gunBody.position.z = 0.6;
+            gun.add(gunBody);
+            
+            gun.position.set(0.5, 1.2, 0.3);
+            player.add(gun);
+            
+            scene.add(player);
+            
+            // Eventos
+            window.addEventListener('resize', onWindowResize);
+            window.addEventListener('keydown', onKeyDown);
+            window.addEventListener('keyup', onKeyUp);
+            window.addEventListener('mousemove', onMouseMove);
+            window.addEventListener('click', onClick);
+            
+            // Configuração do pointer lock
+            const canvas = renderer.domElement;
+            canvas.addEventListener('click', () => {
+                if (!pointerLocked) {
+                    canvas.requestPointerLock = canvas.requestPointerLock || 
+                                            canvas.mozRequestPointerLock ||
+                                            canvas.webkitRequestPointerLock;
+                    canvas.requestPointerLock();
+                }
+            });
+            
+            // Eventos para pointer lock
+            document.addEventListener('pointerlockchange', pointerLockChange);
+            document.addEventListener('mozpointerlockchange', pointerLockChange);
+            document.addEventListener('webkitpointerlockchange', pointerLockChange);
+            
+            // Iniciar o jogo
+            zombieSpawnIntervalId = setInterval(spawnZombie, spawnInterval);
+            powerUpSpawnIntervalId = setInterval(spawnPowerUp, 20000); // Spawn de power-up a cada 20 segundos
+            
+            // Configurar evento de reinício
+            restartButton.addEventListener('click', restartGame);
+            
+            animate();
+        }
+        
+        // Redimensionar a janela
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+        
+        // Controles de teclado
+        function onKeyDown(event) {
+            const key = event.key.toLowerCase();
+            if (keys.hasOwnProperty(key)) {
+                keys[key] = true;
+            }
+        }
+        
+        function onKeyUp(event) {
+            const key = event.key.toLowerCase();
+            if (keys.hasOwnProperty(key)) {
+                keys[key] = false;
+            }
+        }
+        
+        // Função para verificar mudanças no pointer lock
+        function pointerLockChange() {
+            pointerLocked = document.pointerLockElement === renderer.domElement ||
+                           document.mozPointerLockElement === renderer.domElement || 
+                           document.webkitPointerLockElement === renderer.domElement;
+            
+            // Atualizar instruções
+            const instructions = document.getElementById('instructions');
+            if (pointerLocked) {
+                instructions.textContent = "WASD para mover | Mouse para mirar | Clique para atirar | ESC para liberar o mouse";
+            } else {
+                instructions.textContent = "Clique na tela para jogar | WASD para mover | Mouse para mirar | Clique para atirar";
+            }
+        }
+        
+        // Controle do mouse (agora com pointer lock)
+        function onMouseMove(event) {
+            if (!pointerLocked) return;
+            
+            // Movementação real em pixel do mouse, funciona mesmo quando o cursor está no limite da tela
+            const movementX = event.movementX || event.mozMovementX || event.webkitMovementX || 0;
+            
+            // Aplicar a rotação baseada no movimento do mouse
+            targetRotation -= movementX * 0.003;
+        }
+        
+        // Função para lidar com cliques (separada do pointer lock)
+        function onClick() {
+            if (pointerLocked && !isGameOver) {
+                shoot();
+            }
+        }
+        
+        // Criar um zumbi
+        function spawnZombie() {
+            if (zombies.length >= maxZombies) return;
+            
+            // Posicionar zumbi aleatoriamente no perímetro do jogo
+            const angle = Math.random() * Math.PI * 2;
+            const spawnDistance = gameSize - 2;
+            const x = Math.cos(angle) * spawnDistance;
+            const z = Math.sin(angle) * spawnDistance;
+            
+            // Criar zumbi (composto por formas geométricas)
+            const zombie = new THREE.Group();
+            
+            // Corpo do zumbi
+            const zombieBody = new THREE.Mesh(
+                new THREE.BoxGeometry(0.9, 1.8, 0.6),
+                new THREE.MeshStandardMaterial({ color: 0x27ae60 })
+            );
+            zombieBody.position.y = 0.9;
+            zombieBody.castShadow = true;
+            zombie.add(zombieBody);
+            
+            // Cabeça do zumbi
+            const zombieHead = new THREE.Mesh(
+                new THREE.SphereGeometry(0.5, 12, 12),
+                new THREE.MeshStandardMaterial({ color: 0x2ecc71 })
+            );
+            zombieHead.position.y = 2.1;
+            zombieHead.castShadow = true;
+            zombie.add(zombieHead);
+            
+            // Braços do zumbi
+            const leftArm = new THREE.Mesh(
+                new THREE.BoxGeometry(0.25, 1.3, 0.25),
+                new THREE.MeshStandardMaterial({ color: 0x2ecc71 })
+            );
+            leftArm.position.set(-0.6, 0.9, 0);
+            leftArm.rotation.z = 0.2;
+            leftArm.castShadow = true;
+            zombie.add(leftArm);
+            
+            const rightArm = new THREE.Mesh(
+                new THREE.BoxGeometry(0.25, 1.3, 0.25),
+                new THREE.MeshStandardMaterial({ color: 0x2ecc71 })
+            );
+            rightArm.position.set(0.6, 0.9, 0);
+            rightArm.rotation.z = -0.2;
+            rightArm.castShadow = true;
+            zombie.add(rightArm);
+            
+            zombie.position.set(x, 0, z);
+            scene.add(zombie);
+            
+            zombies.push({
+                mesh: zombie,
+                speed: zombieSpeed * (0.8 + Math.random() * 0.4), // Variação de velocidade
+                health: 1
+            });
+        }
+        
+        // Atirar
+        function shoot() {
+            const bullet = new THREE.Mesh(
+                new THREE.SphereGeometry(0.1, 8, 8),
+                new THREE.MeshBasicMaterial({ color: 0xff0000 })
+            );
+            
+            // Posição inicial da bala (da arma do jogador)
+            bullet.position.copy(player.position);
+            bullet.position.y += 1.2;
+            
+            // Direção baseada na rotação do jogador
+            const direction = new THREE.Vector3(0, 0, -1);
+            direction.applyQuaternion(player.quaternion);
+            
+            scene.add(bullet);
+            bullets.push({
+                mesh: bullet,
+                direction: direction,
+                distance: 0
+            });
+        }
+        
+        // Explosão de zumbi
+        function createZombieExplosion(position) {
+            const particleCount = 20;
+            const particles = [];
+            
+            for (let i = 0; i < particleCount; i++) {
+                const particle = new THREE.Mesh(
+                    new THREE.SphereGeometry(0.1 + Math.random() * 0.2, 8, 8),
+                    new THREE.MeshBasicMaterial({ color: 0x2ecc71 })
+                );
+                
+                particle.position.copy(position);
+                particle.position.y += 1;
+                
+                // Direção aleatória
+                const direction = new THREE.Vector3(
+                    (Math.random() - 0.5) * 2,
+                    Math.random() * 2,
+                    (Math.random() - 0.5) * 2
+                );
+                
+                scene.add(particle);
+                particles.push({
+                    mesh: particle,
+                    direction: direction,
+                    life: 30 // frames de vida
+                });
+            }
+            
+            return particles;
+        }
+        
+        // Atualizar partículas
+        let particles = [];
+        
+        function updateParticles() {
+            for (let i = particles.length - 1; i >= 0; i--) {
+                const particle = particles[i];
+                
+                particle.mesh.position.add(
+                    particle.direction.clone().multiplyScalar(0.1)
+                );
+                
+                particle.life--;
+                
+                if (particle.life <= 0) {
+                    scene.remove(particle.mesh);
+                    particles.splice(i, 1);
+                } else {
+                    // Diminuir tamanho gradualmente
+                    particle.mesh.scale.multiplyScalar(0.95);
+                }
+            }
+        }
+        
+        // Verificar colisões
+        function checkCollisions() {
+            // Colisão de balas com zumbis
+            for (let i = bullets.length - 1; i >= 0; i--) {
+                const bullet = bullets[i];
+                
+                for (let j = zombies.length - 1; j >= 0; j--) {
+                    const zombie = zombies[j];
+                    
+                    const distance = bullet.mesh.position.distanceTo(zombie.mesh.position);
+                    
+                    if (distance < 1.5) {
+                        // Zumbi atingido
+                        zombie.health -= 1;
+                        
+                        if (zombie.health <= 0) {
+                            // Gerar explosão
+                            const newParticles = createZombieExplosion(zombie.mesh.position);
+                            particles = particles.concat(newParticles);
+                            
+                            // Remover zumbi
+                            scene.remove(zombie.mesh);
+                            zombies.splice(j, 1);
+                            
+                            // Aumentar pontuação
+                            score++;
+                            scoreElement.textContent = `Pontos: ${score}`;
+                        }
+                        
+                        // Remover bala
+                        scene.remove(bullet.mesh);
+                        bullets.splice(i, 1);
+                        break;
+                    }
+                }
+            }
+            
+            // Colisão de zumbis com jogador
+            for (let i = zombies.length - 1; i >= 0; i--) {
+                const zombie = zombies[i];
+                const distance = zombie.mesh.position.distanceTo(player.position);
+                
+                if (distance < 1.5) {
+                    // Jogador atingido pelo zumbi
+                    // Gerar explosão
+                    const newParticles = createZombieExplosion(zombie.mesh.position);
+                    particles = particles.concat(newParticles);
+                    
+                    // Remover zumbi
+                    scene.remove(zombie.mesh);
+                    zombies.splice(i, 1);
+                    
+                    // Aplicar dano ao jogador
+                    damagePlayer();
+                }
+            }
+        }
+        
+        // Criar um power-up de explosão
+        function spawnPowerUp() {
+            // Posição aleatória dentro da área de jogo
+            const x = (Math.random() * 2 - 1) * (gameSize - 4);
+            const z = (Math.random() * 2 - 1) * (gameSize - 4);
+            
+            // Criar power-up (estrela pulsante)
+            const powerUpGroup = new THREE.Group();
+            
+            // Corpo principal do power-up (esfera)
+            const powerUpMesh = new THREE.Mesh(
+                new THREE.SphereGeometry(0.5, 16, 16),
+                new THREE.MeshStandardMaterial({ 
+                    color: 0xff9500, 
+                    emissive: 0xff5500,
+                    emissiveIntensity: 0.5,
+                    metalness: 1,
+                    roughness: 0.2
+                })
+            );
+            powerUpMesh.castShadow = true;
+            powerUpGroup.add(powerUpMesh);
+            
+            // Pontas da estrela
+            for (let i = 0; i < 8; i++) {
+                const angle = (i / 8) * Math.PI * 2;
+                const point = new THREE.Mesh(
+                    new THREE.ConeGeometry(0.2, 0.6, 4),
+                    new THREE.MeshStandardMaterial({ 
+                        color: 0xffcc00,
+                        emissive: 0xff7700,
+                        emissiveIntensity: 0.5
+                    })
+                );
+                point.position.set(
+                    Math.cos(angle) * 0.7,
+                    Math.sin(angle) * 0.7,
+                    0
+                );
+                point.lookAt(0, 0, 0);
+                point.rotateX(Math.PI / 2);
+                powerUpGroup.add(point);
+            }
+            
+            powerUpGroup.position.set(x, 1, z);
+            scene.add(powerUpGroup);
+            
+            // Adicionar ao array com vida útil e animação
+            powerUps.push({
+                mesh: powerUpGroup,
+                lifeTime: 600, // 10 segundos @ 60fps
+                pulsePhase: 0
+            });
+        }
+        
+        // Efeito de explosão para todos os zumbis próximos
+        function explodeNearbyZombies(position, radius = 10) {
+            const explosionCenter = new THREE.Vector3().copy(position);
+            let zombiesExploded = 0;
+            
+            // Criar efeito de onda expansiva
+            const waveGeometry = new THREE.RingGeometry(0.1, 0.5, 32);
+            const waveMaterial = new THREE.MeshBasicMaterial({ 
+                color: 0xffcc00,
+                transparent: true,
+                opacity: 0.7,
+                side: THREE.DoubleSide
+            });
+            const waveRing = new THREE.Mesh(waveGeometry, waveMaterial);
+            waveRing.rotation.x = Math.PI / 2;
+            waveRing.position.copy(position);
+            waveRing.position.y = 0.1;
+            scene.add(waveRing);
+            
+            // Animar a expansão da onda
+            const expandWave = () => {
+                const scale = waveRing.scale.x + 0.2;
+                waveRing.scale.set(scale, scale, 1);
+                waveMaterial.opacity -= 0.02;
+                
+                if (waveMaterial.opacity <= 0) {
+                    scene.remove(waveRing);
+                    return;
+                }
+                
+                requestAnimationFrame(expandWave);
+            };
+            expandWave();
+            
+            // Verificar quais zumbis estão no raio da explosão
+            for (let i = zombies.length - 1; i >= 0; i--) {
+                const zombie = zombies[i];
+                const distance = zombie.mesh.position.distanceTo(explosionCenter);
+                
+                if (distance <= radius) {
+                    // Gerar explosão
+                    const newParticles = createZombieExplosion(zombie.mesh.position);
+                    particles = particles.concat(newParticles);
+                    
+                    // Remover zumbi
+                    scene.remove(zombie.mesh);
+                    zombies.splice(i, 1);
+                    
+                    // Aumentar pontuação
+                    score++;
+                    zombiesExploded++;
+                }
+            }
+            
+            // Atualizar pontuação
+            scoreElement.textContent = `Pontos: ${score}`;
+            
+            // Exibir mensagem temporária se muitos zumbis foram explodidos
+            if (zombiesExploded >= 3) {
+                const message = document.createElement('div');
+                message.textContent = `+${zombiesExploded} EXPLOSÃO MÚLTIPLA!`;
+                message.style.position = 'absolute';
+                message.style.left = '50%';
+                message.style.top = '50%';
+                message.style.transform = 'translate(-50%, -50%)';
+                message.style.fontSize = '32px';
+                message.style.fontWeight = 'bold';
+                message.style.color = '#ffcc00';
+                message.style.textShadow = '0 0 10px #ff7700';
+                message.style.pointerEvents = 'none';
+                document.body.appendChild(message);
+                
+                setTimeout(() => {
+                    document.body.removeChild(message);
+                }, 2000);
+            }
+        }
+        
+        // Atualizar power-ups
+        function updatePowerUps() {
+            for (let i = powerUps.length - 1; i >= 0; i--) {
+                const powerUp = powerUps[i];
+                
+                // Animar flutuação e rotação
+                powerUp.mesh.rotation.y += 0.02;
+                powerUp.pulsePhase += 0.05;
+                powerUp.mesh.position.y = 1 + Math.sin(powerUp.pulsePhase) * 0.2;
+                
+                // Verificar colisão com o jogador
+                const distance = powerUp.mesh.position.distanceTo(player.position);
+                if (distance < 1.5) {
+                    // Ativar power-up
+                    explodeNearbyZombies(player.position);
+                    
+                    // Remover power-up
+                    scene.remove(powerUp.mesh);
+                    powerUps.splice(i, 1);
+                    continue;
+                }
+                
+                // Reduzir tempo de vida
+                powerUp.lifeTime--;
+                if (powerUp.lifeTime <= 0) {
+                    scene.remove(powerUp.mesh);
+                    powerUps.splice(i, 1);
+                }
+            }
+        }
+        
+        // Atualizar a barra de vida do jogador
+        function updateHealthBar() {
+            healthBar.style.width = `${(playerHealth / 10) * 100}%`;
+        }
+        
+        // Função para quando o jogador recebe dano
+        function damagePlayer() {
+            if (isGameOver) return;
+            
+            playerHealth--;
+            updateHealthBar();
+            
+            // Efeito visual de dano
+            const flash = document.createElement('div');
+            flash.style.position = 'absolute';
+            flash.style.top = '0';
+            flash.style.left = '0';
+            flash.style.width = '100%';
+            flash.style.height = '100%';
+            flash.style.backgroundColor = 'rgba(255, 0, 0, 0.3)';
+            flash.style.pointerEvents = 'none';
+            document.body.appendChild(flash);
+            
+            setTimeout(() => {
+                document.body.removeChild(flash);
+            }, 150);
+            
+            if (playerHealth <= 0) {
+                gameOver();
+            }
+        }
+        
+        // Função de fim de jogo
+        function gameOver() {
+            isGameOver = true;
+            
+            // Exibir tela de game over
+            finalScoreElement.textContent = `Pontuação final: ${score}`;
+            gameOverScreen.style.display = 'flex';
+            
+            // Liberar o ponteiro do mouse
+            document.exitPointerLock();
+            
+            // Parar spawn de inimigos
+            clearInterval(zombieSpawnIntervalId);
+            clearInterval(powerUpSpawnIntervalId);
+        }
+        
+        // Função para reiniciar o jogo
+        function restartGame() {
+            // Limpar o cenário
+            for (const zombie of zombies) {
+                scene.remove(zombie.mesh);
+            }
+            zombies = [];
+            
+            for (const bullet of bullets) {
+                scene.remove(bullet.mesh);
+            }
+            bullets = [];
+            
+            for (const powerUp of powerUps) {
+                scene.remove(powerUp.mesh);
+            }
+            powerUps = [];
+            
+            for (const particle of particles) {
+                scene.remove(particle.mesh);
+            }
+            particles = [];
+            
+            // Resetar valores
+            score = 0;
+            playerHealth = 10;
+            isGameOver = false;
+            scoreElement.textContent = `Pontos: 0`;
+            updateHealthBar();
+            
+            // Reposicionar o jogador no centro e resetar rotação
+            player.position.set(0, 0, 0);
+            player.rotation.set(0, 0, 0);
+            targetRotation = 0;
+            
+            // Reposicionar a câmera
+            camera.position.set(0, 5, 8);
+            camera.lookAt(0, 0, 0);
+            
+            // Esconder tela de game over
+            gameOverScreen.style.display = 'none';
+            
+            // Parar quaisquer intervalos existentes para evitar duplicação
+            clearInterval(zombieSpawnIntervalId);
+            clearInterval(powerUpSpawnIntervalId);
+            
+            // Reiniciar spawn de inimigos
+            zombieSpawnIntervalId = setInterval(spawnZombie, spawnInterval);
+            powerUpSpawnIntervalId = setInterval(spawnPowerUp, 20000);
+            
+            // Resumir a animação
+            if (!animating) {
+                animating = true;
+                animate();
+            }
+        }
+        
+        // Animação principal
+        let animating = true;
+        function animate() {
+            if (isGameOver) {
+                animating = false;
+                renderer.render(scene, camera);
+                return;
+            }
+            
+            requestAnimationFrame(animate);
+            
+            // Aplicar a rotação do jogador suavemente
+            player.rotation.y += (targetRotation - player.rotation.y) * 0.1;
+            
+            // Movimentação do jogador baseada na rotação atual
+            const playerSpeed = moveSpeed;
+            const direction = new THREE.Vector3(0, 0, 0);
+            
+            // Movimento padrão de jogo em terceira pessoa
+            // W/S para frente/trás na direção da visão
+            // A/D para esquerda/direita perpendicular à direção da visão
+            const forwardVector = new THREE.Vector3(0, 0, -1).applyAxisAngle(new THREE.Vector3(0, 1, 0), player.rotation.y);
+            const rightVector = new THREE.Vector3(1, 0, 0).applyAxisAngle(new THREE.Vector3(0, 1, 0), player.rotation.y);
+            
+            if (keys.w) direction.add(forwardVector);
+            if (keys.s) direction.sub(forwardVector);
+            if (keys.a) direction.sub(rightVector);
+            if (keys.d) direction.add(rightVector);
+            
+            if (direction.length() > 0) {
+                direction.normalize();
+                player.position.x += direction.x * playerSpeed;
+                player.position.z += direction.z * playerSpeed;
+                
+                // Limitar movimentação dentro da área de jogo
+                const maxPosition = gameSize - 1;
+                player.position.x = Math.max(-maxPosition, Math.min(maxPosition, player.position.x));
+                player.position.z = Math.max(-maxPosition, Math.min(maxPosition, player.position.z));
+            }
+            
+            // Atualizar balas
+            for (let i = bullets.length - 1; i >= 0; i--) {
+                const bullet = bullets[i];
+                bullet.mesh.position.add(
+                    bullet.direction.clone().multiplyScalar(bulletSpeed)
+                );
+                
+                bullet.distance += bulletSpeed;
+                
+                // Remover balas que foram muito longe
+                if (bullet.distance > 50) {
+                    scene.remove(bullet.mesh);
+                    bullets.splice(i, 1);
+                }
+            }
+            
+            // Atualizar zumbis
+            for (const zombie of zombies) {
+                // Direção para o jogador
+                const direction = new THREE.Vector3();
+                direction.subVectors(player.position, zombie.mesh.position);
+                direction.y = 0; // Manter no plano xz
+                direction.normalize();
+                
+                // Mover em direção ao jogador
+                zombie.mesh.position.add(
+                    direction.clone().multiplyScalar(zombie.speed)
+                );
+                
+                // Rotacionar para olhar para o jogador
+                zombie.mesh.lookAt(player.position);
+            }
+            
+            // Atualizar partículas da explosão
+            updateParticles();
+            
+            // Atualizar power-ups
+            updatePowerUps();
+            
+            // Verificar colisões
+            checkCollisions();
+            
+            // Posicionar a câmera atrás do jogador (visão em terceira pessoa)
+            const cameraOffset = new THREE.Vector3(0, 5, 8);
+            cameraOffset.applyQuaternion(player.quaternion);
+            camera.position.copy(player.position).add(cameraOffset);
+            camera.lookAt(player.position);
+            
+            renderer.render(scene, camera);
+        }
+        
+        // Iniciar o jogo
+        init();
+    </script>
+</body>
+</html> 
